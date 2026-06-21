@@ -1,0 +1,9 @@
+(* MLB for the sml-redis library: the vendored sml-buffer core plus the RESP
+ * codec sources. Consumers reference this file.
+ *
+ * The dependency .mlb is brought in WITHOUT a `local` wrapper so that
+ * consumers (the test suite, examples) can `open Buffer` alongside Redis. *)
+$(SML_LIB)/basis/basis.mlb
+../lib/github.com/sjqtentacles/sml-buffer/sources.mlb
+redis.sig
+redis.sml

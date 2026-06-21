@@ -1,0 +1,5 @@
+package github.com/sjqtentacles/sml-redis
+
+require {
+  github.com/sjqtentacles/sml-buffer
+}

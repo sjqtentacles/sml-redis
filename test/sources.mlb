@@ -1,0 +1,10 @@
+(* Test executable basis: the Redis library (which pulls in the vendored
+ * sml-buffer core) plus the harness and runner. *)
+$(SML_LIB)/basis/basis.mlb
+
+../src/redis.mlb
+
+harness.sml
+test.sml
+entry.sml
+main.sml

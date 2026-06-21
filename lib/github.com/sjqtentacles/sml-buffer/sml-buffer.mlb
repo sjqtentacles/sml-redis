@@ -1,0 +1,10 @@
+(* sml-buffer: public library basis.
+
+   Consumers using smlpkg reference this file at
+     lib/github.com/sjqtentacles/sml-buffer/sml-buffer.mlb
+   from their own .mlb files (MLton / MLKit). For Poly/ML, feed sources.mlb
+   to the tools/polybuild wrapper. *)
+
+$(SML_LIB)/basis/basis.mlb
+
+sources.mlb
