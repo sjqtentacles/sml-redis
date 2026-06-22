@@ -52,6 +52,78 @@ struct
          | NONE => false
     end
 
+  (* ---- RESP3 helpers ----
+
+     `value3` carries `Double of real`, so it is NOT an equality type; compare
+     structurally with an epsilon on Doubles. *)
+  val eps = 1E~9
+  fun reqv (a, b) = Real.== (a, b) orelse Real.abs (a - b) < eps
+
+  fun eq3 (R.Null, R.Null) = true
+    | eq3 (R.Boolean a, R.Boolean b) = a = b
+    | eq3 (R.Double a, R.Double b) = reqv (a, b)
+    | eq3 (R.BigNumber a, R.BigNumber b) = a = b
+    | eq3 (R.Verbatim a, R.Verbatim b) = a = b
+    | eq3 (R.Map a, R.Map b) = eqPairs (a, b)
+    | eq3 (R.Set a, R.Set b) = eqList (a, b)
+    | eq3 (R.Push a, R.Push b) = eqList (a, b)
+    | eq3 (R.SimpleString a, R.SimpleString b) = a = b
+    | eq3 (R.SimpleError a, R.SimpleError b) = a = b
+    | eq3 (R.Integer a, R.Integer b) = a = b
+    | eq3 (R.BlobString a, R.BlobString b) = a = b
+    | eq3 (R.Array3 a, R.Array3 b) = eqOpt (a, b)
+    | eq3 _ = false
+  and eqList ([], []) = true
+    | eqList (x :: xs, y :: ys) = eq3 (x, y) andalso eqList (xs, ys)
+    | eqList _ = false
+  and eqPairs ([], []) = true
+    | eqPairs ((k1, v1) :: xs, (k2, v2) :: ys) =
+        eq3 (k1, k2) andalso eq3 (v1, v2) andalso eqPairs (xs, ys)
+    | eqPairs _ = false
+  and eqOpt (NONE, NONE) = true
+    | eqOpt (SOME a, SOME b) = eqList (a, b)
+    | eqOpt _ = false
+
+  (* A RESP3 value round-trips iff decode3 (encode3 v) recovers v (structurally,
+     epsilon on Doubles) and consumes exactly the encoded bytes. *)
+  fun roundTrips3 v =
+    let val s = R.encode3 v
+    in case R.decode3 s of
+           SOME (v', n) => eq3 (v', v) andalso n = size s
+         | NONE => false
+    end
+
+  val v3samples =
+    [ R.Null
+    , R.Boolean true
+    , R.Boolean false
+    , R.Double 3.0
+    , R.Double 3.25
+    , R.Double ~2.5
+    , R.Double 0.5
+    , R.Double 100.0
+    , R.Double Real.posInf
+    , R.Double Real.negInf
+    , R.BigNumber "3492890328409238509324850943850943825024385"
+    , R.BigNumber "-42"
+    , R.Verbatim ("txt", "Some string")
+    , R.Map [(R.SimpleString "first", R.Integer 1),
+             (R.SimpleString "second", R.Integer 2)]
+    , R.Set [R.Integer 1, R.Integer 2]
+    , R.Push [R.SimpleString "message", R.SimpleString "channel",
+              R.SimpleString "payload"]
+    , R.SimpleString "OK"
+    , R.SimpleError "ERR boom"
+    , R.Integer ~7
+    , R.BlobString (SOME "hello")
+    , R.BlobString NONE
+    , R.Array3 (SOME [R.Integer 1, R.Boolean true, R.Null])
+    , R.Array3 NONE
+    , R.Array3 (SOME [])
+    (* nesting: a map whose values are a set and an array of doubles *)
+    , R.Map [(R.SimpleString "s", R.Set [R.Integer 9]),
+             (R.SimpleString "a", R.Array3 (SOME [R.Double 1.5, R.Double 2.0]))] ]
+
   fun runAll () =
     let
       (* ---- encode goldens ---- *)
@@ -173,6 +245,123 @@ struct
                Harness.check "cmd decodes to array of bulks"
                  (v = R.Array (SOME [R.Bulk (SOME "GET"), R.Bulk (SOME "greeting")]))
            | NONE => Harness.check "decode cmd" false)
+
+      (* ---- RESP3 encode goldens (authoritative wire vectors) ---- *)
+      val () = Harness.section "RESP3 encode goldens"
+      val () = Harness.checkString "Null" ("_\r\n", R.encode3 R.Null)
+      val () = Harness.checkString "Boolean true" ("#t\r\n", R.encode3 (R.Boolean true))
+      val () = Harness.checkString "Boolean false" ("#f\r\n", R.encode3 (R.Boolean false))
+      val () = Harness.checkString "Double 3.0 (integral, no point)"
+                 (",3\r\n", R.encode3 (R.Double 3.0))
+      val () = Harness.checkString "Double 3.25"
+                 (",3.25\r\n", R.encode3 (R.Double 3.25))
+      val () = Harness.checkString "Double ~3.25 (leading '-')"
+                 (",-3.25\r\n", R.encode3 (R.Double ~3.25))
+      val () = Harness.checkString "Double +inf"
+                 (",inf\r\n", R.encode3 (R.Double Real.posInf))
+      val () = Harness.checkString "Double -inf"
+                 (",-inf\r\n", R.encode3 (R.Double Real.negInf))
+      val () = Harness.checkString "BigNumber"
+                 ("(3492890328409238509324850943850943825024385\r\n",
+                  R.encode3 (R.BigNumber "3492890328409238509324850943850943825024385"))
+      val () = Harness.checkString "Verbatim (txt:Some string)"
+                 ("=15\r\ntxt:Some string\r\n",
+                  R.encode3 (R.Verbatim ("txt", "Some string")))
+      val () = Harness.checkString "Map {first:1, second:2}"
+                 ("%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n",
+                  R.encode3 (R.Map [(R.SimpleString "first", R.Integer 1),
+                                    (R.SimpleString "second", R.Integer 2)]))
+      val () = Harness.checkString "Set {1,2}"
+                 ("~2\r\n:1\r\n:2\r\n",
+                  R.encode3 (R.Set [R.Integer 1, R.Integer 2]))
+      val () = Harness.checkString "Push [message,channel,payload]"
+                 (">3\r\n+message\r\n+channel\r\n+payload\r\n",
+                  R.encode3 (R.Push [R.SimpleString "message",
+                                     R.SimpleString "channel",
+                                     R.SimpleString "payload"]))
+
+      (* ---- RESP3 Double formatting (documented, deterministic) ---- *)
+      val () = Harness.section "RESP3 doubleToString format"
+      val () = Harness.checkString "3.0 -> 3"   ("3",   R.doubleToString 3.0)
+      val () = Harness.checkString "3.25"        ("3.25", R.doubleToString 3.25)
+      val () = Harness.checkString "~3.0 -> -3" ("-3",  R.doubleToString ~3.0)
+      val () = Harness.checkString "0.5"         ("0.5", R.doubleToString 0.5)
+      val () = Harness.checkString "100.0 -> 100" ("100", R.doubleToString 100.0)
+      val () = Harness.checkString "+inf"        ("inf", R.doubleToString Real.posInf)
+      val () = Harness.checkString "-inf"        ("-inf", R.doubleToString Real.negInf)
+
+      (* ---- RESP3 round-trips (epsilon on Doubles) ---- *)
+      val () = Harness.section "RESP3 encode3 -> decode3 round-trips"
+      val () =
+        ignore (List.foldl
+          (fn (v, i) =>
+            (Harness.check ("v3 round-trip #" ^ Int.toString i) (roundTrips3 v); i + 1))
+          0 v3samples)
+
+      (* ---- RESP3 decode value/bytes-consumed spot checks ---- *)
+      val () = Harness.section "RESP3 decode3 details"
+      val () =
+        (case R.decode3 "_\r\n" of
+             SOME (v, n) =>
+               (Harness.check "Null value" (eq3 (v, R.Null));
+                Harness.checkInt "Null consumed" (3, n))
+           | NONE => Harness.check "decode3 Null" false)
+      val () =
+        (case R.decode3 ",3\r\n" of
+             SOME (R.Double r, n) =>
+               (Harness.check "Double 3.0 value" (reqv (r, 3.0));
+                Harness.checkInt "Double consumed" (4, n))
+           | _ => Harness.check "decode3 Double" false)
+      val () =
+        (case R.decode3 "=15\r\ntxt:Some string\r\n" of
+             SOME (v, _) =>
+               Harness.check "Verbatim value"
+                 (eq3 (v, R.Verbatim ("txt", "Some string")))
+           | NONE => Harness.check "decode3 Verbatim" false)
+      val () =
+        (* trailing bytes beyond the first value are not consumed *)
+        (case R.decode3 "#t\r\n#f\r\n" of
+             SOME (v, n) =>
+               (Harness.check "first bool only" (eq3 (v, R.Boolean true));
+                Harness.checkInt "bool consumed stops at frame" (4, n))
+           | NONE => Harness.check "decode3 bool+extra" false)
+
+      (* ---- RESP3 partial / malformed input ---- *)
+      val () = Harness.section "RESP3 partial / malformed decode3 = NONE"
+      fun none3 s = not (Option.isSome (R.decode3 s))
+      val () = Harness.check "empty is NONE" (none3 "")
+      val () = Harness.check "truncated Null is NONE" (none3 "_\r")
+      val () = Harness.check "bad boolean is NONE" (none3 "#x\r\n")
+      val () = Harness.check "non-numeric double is NONE" (none3 ",abc\r\n")
+      val () = Harness.check "non-digit bignum is NONE" (none3 "(12x\r\n")
+      val () = Harness.check "map missing pair is NONE" (none3 "%2\r\n+first\r\n:1\r\n")
+      val () = Harness.check "set short is NONE" (none3 "~2\r\n:1\r\n")
+
+      (* ---- typed command builders (authoritative wire vectors) ---- *)
+      val () = Harness.section "typed command builders"
+      val () = Harness.checkString "set"
+                 ("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nval\r\n",
+                  R.set ("key", "val"))
+      val () = Harness.checkString "get"
+                 ("*2\r\n$3\r\nGET\r\n$5\r\nmykey\r\n", R.get "mykey")
+      val () = Harness.checkString "hget"
+                 ("*3\r\n$4\r\nHGET\r\n$1\r\nh\r\n$1\r\nf\r\n", R.hget ("h", "f"))
+      val () = Harness.checkString "hset"
+                 ("*4\r\n$4\r\nHSET\r\n$1\r\nh\r\n$1\r\nf\r\n$1\r\nv\r\n",
+                  R.hset ("h", "f", "v"))
+      val () = Harness.checkString "pipeline [get a, get b]"
+                 ("*2\r\n$3\r\nGET\r\n$1\r\na\r\n*2\r\n$3\r\nGET\r\n$1\r\nb\r\n",
+                  R.pipeline [R.get "a", R.get "b"])
+      val () = Harness.checkString "pipeline [] (empty)" ("", R.pipeline [])
+      val () =
+        (* a builder's output decodes back to the RESP2 array of bulk args *)
+        (case R.decode (R.set ("key", "val")) of
+             SOME (v, _) =>
+               Harness.check "set decodes to array of bulks"
+                 (v = R.Array (SOME [R.Bulk (SOME "SET"),
+                                     R.Bulk (SOME "key"),
+                                     R.Bulk (SOME "val")]))
+           | NONE => Harness.check "decode set" false)
     in
       ()
     end

@@ -1,9 +1,10 @@
 # sml-redis
 
-A pure Standard ML codec for **RESP** (the REdis Serialization Protocol) plus
-Redis client command builders. `encode`/`decode` move bytes between a `resp`
-value and its on-wire `string` form — **no sockets, no FFI, no I/O** — so the
-codec is trivially testable and runs byte-identically under
+A pure Standard ML codec for **RESP** — both **RESP2** and **RESP3**, the wire
+protocols Redis speaks — plus **typed Redis command builders**. `encode`/`decode`
+(RESP2) and `encode3`/`decode3` (RESP3) move bytes between a value and its
+on-wire `string` form — **no sockets, no FFI, no I/O** — so the codec is
+trivially testable and runs byte-identically under
 [MLton](http://mlton.org/) and [Poly/ML](https://www.polyml.org/). Bytes are
 assembled through [`sml-buffer`](https://github.com/sjqtentacles/sml-buffer)
 (vendored, Layout B), so the repo builds standalone.
@@ -13,9 +14,21 @@ of a buffer and reports exactly how many bytes that value consumed, returning
 `NONE` when the buffer is truncated (the rest of the frame hasn't arrived yet)
 or malformed — the discipline you need to drive a real socket loop.
 
+## Highlights
+
+- **RESP2 codec** — `Simple`, `Error`, `Int`, `Bulk`, `Array`, with null
+  bulk/array, embedded-CRLF payloads, and a streaming `decode`.
+- **RESP3 codec** — `Null`, `Boolean`, `Double`, `BigNumber`, `VerbatimString`,
+  `Map`, `Set`, `Push` plus the carryover RESP2 kinds for nesting, via a
+  separate `value3` type and `encode3`/`decode3` (the RESP2 API is untouched).
+- **Typed command builders** — `set`, `get`, `hget`, `hset`, and `pipeline`
+  emit the standard RESP2 array-of-bulk-strings requests a client sends.
+- **Deterministic Doubles** — RESP3 `Double` formatting is fixed and
+  byte-identical across compilers (see [Double formatting](#double-formatting)).
+
 ## Status
 
-- 60 assertions, green on MLton and Poly/ML, both printing `60 passed, 0 failed`.
+- 126 assertions, green on MLton and Poly/ML, both printing `126 passed, 0 failed`.
 - Basis-library only; deterministic across compilers.
 - Vendors `sml-buffer` (Layout B), byte-identical to upstream.
 
@@ -73,6 +86,56 @@ val decode : string -> (resp * int) option   (* value + bytes consumed *)
 val cmd    : string list -> string           (* RESP array of bulk strings *)
 ```
 
+### RESP3 (additive)
+
+RESP3 is modelled by a **separate** `value3` datatype with its own
+`encode3`/`decode3`, so the original RESP2 `resp` type and codec stay intact.
+`value3` also carries the RESP2 kinds it needs for nesting (a `Map` value, `Set`
+element, or `Push` payload can be any `value3`):
+
+```sml
+datatype value3 =
+    Null                            (* "_\r\n"                                  *)
+  | Boolean of bool                 (* "#t\r\n" / "#f\r\n"                       *)
+  | Double of real                  (* ",3\r\n", ",3.25\r\n", ",inf\r\n", ",-inf\r\n" *)
+  | BigNumber of string             (* "(3492890328409238509324...\r\n"          *)
+  | Verbatim of string * string     (* (fmt, content): "=15\r\ntxt:Some string\r\n" *)
+  | Map of (value3 * value3) list   (* "%2\r\n+first\r\n:1\r\n+second\r\n:2\r\n"  *)
+  | Set of value3 list              (* "~2\r\n:1\r\n:2\r\n"                       *)
+  | Push of value3 list             (* ">3\r\n+message\r\n+channel\r\n+payload\r\n" *)
+  (* carryover RESP2 kinds, for nesting / standalone use *)
+  | SimpleString of string          (* "+OK\r\n"                                 *)
+  | SimpleError of string           (* "-ERR bad\r\n"                            *)
+  | Integer of int                  (* ":1000\r\n"                               *)
+  | BlobString of string option     (* "$5\r\nhello\r\n" / null "$-1\r\n"        *)
+  | Array3 of value3 list option    (* "*2\r\n...\r\n..." / null "*-1\r\n"        *)
+
+val doubleToString : real -> string             (* the ',' Double payload  *)
+val encode3 : value3 -> string
+val decode3 : string -> (value3 * int) option   (* value + bytes consumed  *)
+```
+
+### Typed command builders
+
+These produce the standard RESP2 array-of-bulk-strings request a client sends
+(the same byte type as `encode`/`cmd`):
+
+```sml
+val set      : string * string -> string          (* set ("key","val")  *)
+val get      : string -> string                   (* get "mykey"        *)
+val hget     : string * string -> string          (* hget ("h","f")     *)
+val hset     : string * string * string -> string (* hset ("h","f","v") *)
+val pipeline : string list -> string              (* concat encoded cmds *)
+```
+
+```sml
+Redis.set ("key", "val")
+(* "*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nval\r\n" *)
+
+Redis.pipeline [Redis.get "a", Redis.get "b"]
+(* "*2\r\n$3\r\nGET\r\n$1\r\na\r\n*2\r\n$3\r\nGET\r\n$1\r\nb\r\n" *)
+```
+
 ### Semantics
 
 - `encode v` produces the canonical RESP byte string. Negative integers use a
@@ -88,6 +151,24 @@ val cmd    : string list -> string           (* RESP array of bulk strings *)
   terminator).
 - `cmd args` is `encode (Array (SOME (map (Bulk o SOME) args)))` — the form
   Redis clients use to send commands.
+- `encode3`/`decode3` follow the identical contract for RESP3 `value3` values.
+  `decode3` reports bytes consumed and returns `NONE` on truncated/malformed
+  input, just like `decode`.
+
+<a name="double-formatting"></a>
+### Double formatting
+
+RESP3 `Double` payloads (`doubleToString`) use a **fixed, deterministic** format
+so the bytes are identical under MLton and Poly/ML:
+
+- non-finite values render as `inf`, `-inf`, `nan`;
+- integral values carry **no** decimal point — `3.0` → `,3\r\n`;
+- other values use a fixed-precision decimal with trailing zeros stripped —
+  `3.25` → `,3.25\r\n`;
+- negatives use a leading `-`, never SML's `~` — `~3.25` → `,-3.25\r\n`.
+
+It builds on `Real.fmt (StringCvt.FIX _)`, which is byte-identical across both
+compilers. Compare RESP3 `Double`s with an epsilon (never `=`).
 
 ## Example
 
@@ -117,6 +198,23 @@ Pipelined reply stream (decode one frame at a time):
   frame 2: Array [Bulk (SOME "a"), Bulk (SOME "b")]
   frame 3: Bulk NONE
 
+Typed command builders:
+  set: *3\r\n$3\r\nSET\r\n$8\r\ngreeting\r\n$5\r\nhello\r\n
+  get: *2\r\n$3\r\nGET\r\n$8\r\ngreeting\r\n
+  hset: *4\r\n$4\r\nHSET\r\n$1\r\nh\r\n$1\r\nf\r\n$1\r\nv\r\n
+  pipeline: *2\r\n$3\r\nGET\r\n$1\r\na\r\n*2\r\n$3\r\nGET\r\n$1\r\nb\r\n
+
+RESP3 values (encode3):
+  Null: _\r\n
+  Boolean: #t\r\n
+  Double 3.0: ,3\r\n
+  Double 3.25: ,3.25\r\n
+  Double -inf: ,-inf\r\n
+  Verbatim: =15\r\ntxt:Some string\r\n
+  Map: %2\r\n+first\r\n:1\r\n+second\r\n:2\r\n
+  Set: ~2\r\n:1\r\n:2\r\n
+  Push: >3\r\n+message\r\n+channel\r\n+payload\r\n
+
 OK -- built and parsed a full exchange with the RESP codec.
 ```
 
@@ -135,10 +233,17 @@ the protocol spec written out as literal byte strings. Highlights:
 
 - **Encode goldens** for every variant, including the null bulk (`$-1\r\n`),
   null array (`*-1\r\n`), empty payloads, and negative integers (`:-42\r\n`).
+- **RESP3 wire vectors** for every `value3` kind (`_\r\n`, `#t\r\n`, `,3\r\n`,
+  `,3.25\r\n`, `,-inf\r\n`, `(...\r\n`, `=15\r\ntxt:...`, `%`/`~`/`>` maps, sets
+  and pushes), plus the `doubleToString` format checks.
+- **Typed builders** assert the exact `set`/`get`/`hget`/`hset`/`pipeline`
+  request bytes.
 - **Round-trips:** `decode (encode v) = (v, size (encode v))` for every variant,
-  including nested arrays and bulks with embedded CRLF.
-- **Bytes-consumed contract:** `decode` stops at the end of the first value even
-  when more bytes follow, so a buffer can be drained one frame at a time.
+  including nested arrays and bulks with embedded CRLF; `decode3 (encode3 v)`
+  recovers every `value3` (Doubles compared with an epsilon).
+- **Bytes-consumed contract:** `decode`/`decode3` stop at the end of the first
+  value even when more bytes follow, so a buffer can be drained one frame at a
+  time.
 - **Partial buffers:** every strict prefix of a complete frame decodes to
   `NONE`, and so do malformed frames (unknown type byte, non-numeric length).
 

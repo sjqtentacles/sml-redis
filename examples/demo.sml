@@ -83,5 +83,29 @@ fun drain (buf, idx) =
 
 val () = drain (stream, 0)
 
+(* --- Typed command builders (RESP2 array-of-bulk requests) --- *)
+val () = line ""
+val () = line "Typed command builders:"
+val () = show ("set", R.set ("greeting", "hello"))
+val () = show ("get", R.get "greeting")
+val () = show ("hset", R.hset ("h", "f", "v"))
+val () = show ("pipeline", R.pipeline [R.get "a", R.get "b"])
+
+(* --- RESP3 values: encode a handful of the new kinds --- *)
+val () = line ""
+val () = line "RESP3 values (encode3):"
+val () = show ("Null", R.encode3 R.Null)
+val () = show ("Boolean", R.encode3 (R.Boolean true))
+val () = show ("Double 3.0", R.encode3 (R.Double 3.0))
+val () = show ("Double 3.25", R.encode3 (R.Double 3.25))
+val () = show ("Double -inf", R.encode3 (R.Double Real.negInf))
+val () = show ("Verbatim", R.encode3 (R.Verbatim ("txt", "Some string")))
+val () = show ("Map", R.encode3 (R.Map [(R.SimpleString "first", R.Integer 1),
+                                        (R.SimpleString "second", R.Integer 2)]))
+val () = show ("Set", R.encode3 (R.Set [R.Integer 1, R.Integer 2]))
+val () = show ("Push", R.encode3 (R.Push [R.SimpleString "message",
+                                          R.SimpleString "channel",
+                                          R.SimpleString "payload"]))
+
 val () = line ""
 val () = line "OK -- built and parsed a full exchange with the RESP codec."
