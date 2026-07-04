@@ -9,7 +9,7 @@
 
      - Simple of string         "+OK\r\n"            a status line
      - Error  of string         "-ERR bad\r\n"       an error line
-     - Int    of int            ":1000\r\n"          a 64-bit signed integer
+     - Int    of IntInf.int     ":1000\r\n"          a wire integer reply
      - Bulk   of string option  "$5\r\nhello\r\n"    a length-prefixed blob;
                                                      NONE is the null bulk "$-1\r\n"
      - Array  of resp list option
@@ -18,14 +18,26 @@
 
    The byte container is `string`: RESP bulk payloads are arbitrary bytes and
    SML `string` is a byte vector, so it interoperates cleanly with the rest of
-   the ecosystem (sml-buffer, sml-codec, ...). All line terminators are CRLF. *)
+   the ecosystem (sml-buffer, sml-codec, ...). All line terminators are CRLF.
+
+   Integer replies (`Int` / RESP3 `Integer`) carry an `IntInf.int` rather than
+   a machine `int`. The RESP wire integer is 64-bit (and some replies exceed
+   2^31), while MLton's default `int` is only 32-bit -- parsing such a value
+   with `Int.fromString` raises `Overflow` on MLton yet succeeds on Poly/ML
+   (63-bit `int`). Using arbitrary-precision `IntInf.int` makes every magnitude
+   decode losslessly and byte-identically on both compilers.
+
+   BREAKING CHANGE: `Int` and `Integer` changed from `int` to `IntInf.int`.
+   Integer *literals* passed to these constructors are unaffected (they infer
+   as `IntInf.int`); code that pattern-matches an integer reply and uses it as a
+   machine `int` must convert with `Int.fromLarge` / `IntInf.toInt`. *)
 
 signature REDIS =
 sig
   datatype resp =
       Simple of string
     | Error  of string
-    | Int    of int
+    | Int    of IntInf.int
     | Bulk   of string option
     | Array  of resp list option
 
@@ -66,7 +78,7 @@ sig
        (carryover RESP2 kinds, for nesting / standalone use)
        - SimpleString of string     "+OK\r\n"
        - SimpleError of string      "-ERR bad\r\n"
-       - Integer of int             ":1000\r\n"
+       - Integer of IntInf.int      ":1000\r\n"
        - BlobString of string option "$5\r\nhello\r\n" / null "$-1\r\n"
        - Array3 of value3 list option "*2\r\n...\r\n..." / null "*-1\r\n" *)
   datatype value3 =
@@ -80,7 +92,7 @@ sig
     | Push of value3 list
     | SimpleString of string
     | SimpleError of string
-    | Integer of int
+    | Integer of IntInf.int
     | BlobString of string option
     | Array3 of value3 list option
 

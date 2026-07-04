@@ -28,9 +28,13 @@ or malformed — the discipline you need to drive a real socket loop.
 
 ## Status
 
-- 126 assertions, green on MLton and Poly/ML, both printing `126 passed, 0 failed`.
+- 135 assertions, green on MLton and Poly/ML, both printing `135 passed, 0 failed`.
 - Basis-library only; deterministic across compilers.
 - Vendors `sml-buffer` (Layout B), byte-identical to upstream.
+- Integer replies use `IntInf.int` so 64-bit (and larger) wire integers decode
+  losslessly and identically on both compilers — a plain `Int.fromString` would
+  raise `Overflow` on MLton's 32-bit `int` for a value past 2^31 while Poly/ML
+  accepted it. See the breaking-change note under **API**.
 
 ## Install
 
@@ -77,7 +81,7 @@ val NONE = Redis.decode "$5\r\nhel"
 datatype resp =
     Simple of string          (* "+OK\r\n"            *)
   | Error  of string          (* "-ERR bad\r\n"       *)
-  | Int    of int             (* ":1000\r\n"          *)
+  | Int    of IntInf.int      (* ":1000\r\n"          *)
   | Bulk   of string option   (* "$5\r\nhello\r\n" / null "$-1\r\n"  *)
   | Array  of resp list option (* "*2\r\n...\r\n..." / null "*-1\r\n" *)
 
@@ -85,6 +89,15 @@ val encode : resp -> string
 val decode : string -> (resp * int) option   (* value + bytes consumed *)
 val cmd    : string list -> string           (* RESP array of bulk strings *)
 ```
+
+**Breaking change:** integer replies (`Int`, and the RESP3 `Integer`) carry an
+`IntInf.int`, not a machine `int`. RESP wire integers are 64-bit and some
+replies exceed 2^31; MLton's default `int` is 32-bit, so decoding such a value
+with `Int.fromString` raises `Overflow` there while Poly/ML's 63-bit `int`
+accepts it. `IntInf.int` (arbitrary precision) makes every magnitude decode
+losslessly and byte-identically on both compilers. Integer *literals* you pass
+to `Int`/`Integer` still work unchanged; if you match an integer reply and need
+a machine `int`, convert with `IntInf.toInt` (or `Int.fromLarge`).
 
 ### RESP3 (additive)
 
@@ -106,7 +119,7 @@ datatype value3 =
   (* carryover RESP2 kinds, for nesting / standalone use *)
   | SimpleString of string          (* "+OK\r\n"                                 *)
   | SimpleError of string           (* "-ERR bad\r\n"                            *)
-  | Integer of int                  (* ":1000\r\n"                               *)
+  | Integer of IntInf.int           (* ":1000\r\n"                               *)
   | BlobString of string option     (* "$5\r\nhello\r\n" / null "$-1\r\n"        *)
   | Array3 of value3 list option    (* "*2\r\n...\r\n..." / null "*-1\r\n"        *)
 

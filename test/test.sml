@@ -362,6 +362,47 @@ struct
                                      R.Bulk (SOME "key"),
                                      R.Bulk (SOME "val")]))
            | NONE => Harness.check "decode set" false)
+
+      (* ---- large integer replies (cross-compiler overflow safety) ----
+
+         RESP integer replies (`:<n>\r\n`) are 64-bit on the Redis wire, and
+         some commands (e.g. bit counts, memory stats) legitimately return
+         values beyond 2^31. A machine `int` is only 32-bit under MLton's
+         default, so `Int.fromString` on such a numeral raises Overflow (a
+         crash) there while Poly/ML (63-bit) silently accepts it -- a
+         cross-compiler divergence. The integer reply value is therefore an
+         `IntInf.int`, so every magnitude round-trips losslessly and identically
+         on both compilers, and decoding NEVER raises. *)
+      val () = Harness.section "large integer replies (IntInf)"
+      val big31 : IntInf.int = 3000000000            (* > 2^31, crashes 32-bit Int.fromString *)
+      val big63 : IntInf.int = 12345678901234567890  (* > 2^63, a 20-digit reply *)
+      val () = Harness.check "decode never raises on 20-digit int"
+                 (let val _ = R.decode ":12345678901234567890\r\n" in true end
+                  handle _ => false)
+      val () =
+        (case R.decode ":3000000000\r\n" of
+             SOME (R.Int v, n) =>
+               (Harness.check "value past 2^31 decodes exactly" (v = big31);
+                Harness.checkInt "consumed" (13, n))
+           | _ => Harness.check "decode 3000000000" false)
+      val () =
+        (case R.decode ":12345678901234567890\r\n" of
+             SOME (R.Int v, _) =>
+               Harness.check "20-digit int decodes exactly" (v = big63)
+           | _ => Harness.check "decode 20-digit int" false)
+      val () = Harness.checkString "encode round 20-digit int"
+                 (":12345678901234567890\r\n", R.encode (R.Int big63))
+      val () = Harness.check "RESP2 large int round-trips" (roundTrips (R.Int big63))
+      val () = Harness.check "RESP2 large negative int round-trips"
+                 (roundTrips (R.Int (~big63)))
+      val () =
+        (* RESP3 Integer shares the same 64-bit-and-beyond domain *)
+        (case R.decode3 ":12345678901234567890\r\n" of
+             SOME (R.Integer v, _) =>
+               Harness.check "RESP3 20-digit Integer decodes exactly" (v = big63)
+           | _ => Harness.check "decode3 20-digit Integer" false)
+      val () = Harness.check "RESP3 large Integer round-trips"
+                 (roundTrips3 (R.Integer big63))
     in
       ()
     end

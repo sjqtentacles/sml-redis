@@ -23,7 +23,7 @@ fun show (label, raw) =
 (* Pretty-print a decoded RESP value (one line). *)
 fun respStr (R.Simple s)        = "Simple \"" ^ s ^ "\""
   | respStr (R.Error s)         = "Error \"" ^ s ^ "\""
-  | respStr (R.Int i)           = "Int " ^ Int.toString i
+  | respStr (R.Int i)           = "Int " ^ IntInf.toString i
   | respStr (R.Bulk NONE)       = "Bulk NONE"
   | respStr (R.Bulk (SOME s))   = "Bulk (SOME \"" ^ s ^ "\")"
   | respStr (R.Array NONE)      = "Array NONE"

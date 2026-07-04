@@ -18,16 +18,22 @@ struct
   datatype resp =
       Simple of string
     | Error  of string
-    | Int    of int
+    | Int    of IntInf.int
     | Bulk   of string option
     | Array  of resp list option
 
   (* ---- encoding ---- *)
 
   (* RESP integers use a leading '-' for negatives, unlike SML's Int.toString
-     which prints '~'. Reformat by hand. *)
+     which prints '~'. Reformat by hand.
+
+     `intStr` is for machine-int length/count fields (bounded by the input
+     size, so it never overflows). `intStrInf` renders an arbitrary-precision
+     integer reply value, which can legitimately exceed 2^31 on the wire. *)
   fun intStr i =
     if i < 0 then "-" ^ Int.toString (~i) else Int.toString i
+  fun intStrInf (i : IntInf.int) =
+    if i < 0 then "-" ^ IntInf.toString (~i) else IntInf.toString i
 
   fun crlf b = Buffer.addString b "\r\n"
 
@@ -35,7 +41,7 @@ struct
     case r of
         Simple s => (Buffer.addChar b #"+"; Buffer.addString b s; crlf b)
       | Error s  => (Buffer.addChar b #"-"; Buffer.addString b s; crlf b)
-      | Int i    => (Buffer.addChar b #":"; Buffer.addString b (intStr i); crlf b)
+      | Int i    => (Buffer.addChar b #":"; Buffer.addString b (intStrInf i); crlf b)
       | Bulk NONE => Buffer.addString b "$-1\r\n"
       | Bulk (SOME s) =>
           (Buffer.addChar b #"$"; Buffer.addString b (intStr (size s)); crlf b;
@@ -73,21 +79,48 @@ struct
         NONE => NONE
       | SOME j => SOME (String.substring (s, i, j - i), j + 2)
 
-  (* Parse a RESP integer line strictly: the whole line must be a signed
-     decimal numeral (Int.scan would otherwise accept a numeric prefix). *)
-  fun parseIntLine line =
+  (* Is `line` a strict signed decimal numeral? (Int.scan would otherwise
+     accept a numeric prefix such as "12x".) RESP writes the sign as '-';
+     IntInf.fromString / Int.fromString want SML's '~', so we translate. *)
+  fun numeralOk line =
     let
       val n = size line
       fun digits k = k >= n orelse (Char.isDigit (String.sub (line, k)) andalso digits (k + 1))
-      val ok =
-        n > 0 andalso
-        (case String.sub (line, 0) of
-             #"-" => n >= 2 andalso digits 1
-           | #"+" => n >= 2 andalso digits 1
-           | _    => digits 0)
     in
-      if ok then Int.fromString line else NONE
+      n > 0 andalso
+      (case String.sub (line, 0) of
+           #"-" => n >= 2 andalso digits 1
+         | #"+" => n >= 2 andalso digits 1
+         | _    => digits 0)
     end
+
+  (* Rewrite a RESP-signed numeral into SML syntax ('-' -> '~', drop '+'). *)
+  fun toSmlNumeral line =
+    if String.isPrefix "-" line then "~" ^ String.extract (line, 1, NONE)
+    else if String.isPrefix "+" line then String.extract (line, 1, NONE)
+    else line
+
+  (* Parse a RESP integer reply value. These are 64-bit (and occasionally
+     larger) on the wire, so the result is an arbitrary-precision `IntInf.int`:
+     `IntInf.fromString` never overflows, so decoding is lossless and identical
+     under MLton (32-bit `int`) and Poly/ML (63-bit `int`). *)
+  fun parseIntLineInf line =
+    if numeralOk line then IntInf.fromString (toSmlNumeral line) else NONE
+
+  (* Parse a RESP length / element-count field. Unlike a reply value this must
+     be a machine `int` (it indexes into the byte string), but it is bounded by
+     the buffer size in practice. We still parse through `IntInf` and range-check
+     against the FIXED 32-bit signed range -- the width that MLton's default
+     `int` is guaranteed to hold -- so an absurd length fails gracefully as
+     "malformed" (NONE) on every compiler rather than raising Overflow on
+     MLton. (We use the fixed literals, not `Int.maxInt`, so the bound is the
+     same regardless of the host compiler's actual `int` width.) *)
+  val lenMin : IntInf.int = ~2147483648
+  val lenMax : IntInf.int =  2147483647
+  fun parseIntLine line =
+    case parseIntLineInf line of
+        NONE => NONE
+      | SOME n => if n >= lenMin andalso n <= lenMax then SOME (IntInf.toInt n) else NONE
 
   (* Parse one value starting at absolute index `i`; returns (value, next). *)
   fun parseAt s i =
@@ -105,7 +138,7 @@ struct
          | #":" =>
              (case readLine (s, i + 1) of
                   SOME (line, j) =>
-                    (case parseIntLine line of
+                    (case parseIntLineInf line of
                          SOME v => SOME (Int v, j)
                        | NONE => NONE)
                 | NONE => NONE)
@@ -169,7 +202,7 @@ struct
     | Push of value3 list
     | SimpleString of string
     | SimpleError of string
-    | Integer of int
+    | Integer of IntInf.int
     | BlobString of string option
     | Array3 of value3 list option
 
@@ -230,7 +263,7 @@ struct
            List.app (encode3Into b) xs)
       | SimpleString s => (Buffer.addChar b #"+"; Buffer.addString b s; crlf b)
       | SimpleError s  => (Buffer.addChar b #"-"; Buffer.addString b s; crlf b)
-      | Integer i      => (Buffer.addChar b #":"; Buffer.addString b (intStr i); crlf b)
+      | Integer i      => (Buffer.addChar b #":"; Buffer.addString b (intStrInf i); crlf b)
       | BlobString NONE => Buffer.addString b "$-1\r\n"
       | BlobString (SOME s) =>
           (Buffer.addChar b #"$"; Buffer.addString b (intStr (size s)); crlf b;
@@ -314,7 +347,7 @@ struct
                       | NONE => NONE)
          | #":" => (case readLine (s, i + 1) of
                         SOME (line, j) =>
-                          (case parseIntLine line of
+                          (case parseIntLineInf line of
                                SOME v => SOME (Integer v, j)
                              | NONE => NONE)
                       | NONE => NONE)
