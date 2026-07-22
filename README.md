@@ -1,5 +1,7 @@
 # sml-redis
 
+[![CI](https://github.com/sjqtentacles/sml-redis/actions/workflows/ci.yml/badge.svg)](https://github.com/sjqtentacles/sml-redis/actions/workflows/ci.yml)
+
 A pure Standard ML codec for **RESP** — both **RESP2** and **RESP3**, the wire
 protocols Redis speaks — plus **typed Redis command builders**. `encode`/`decode`
 (RESP2) and `encode3`/`decode3` (RESP3) move bytes between a value and its
